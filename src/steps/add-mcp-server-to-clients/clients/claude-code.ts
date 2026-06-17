@@ -1,0 +1,120 @@
+import { execSync } from 'child_process';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { MCPClient, SERVER_NAME } from '../MCPClient.js';
+import { REMOTE_MCP_URL, LOCAL_MCP_URL } from '../defaults.js';
+import type { MCPClientResult } from '../../../utils/types.js';
+import { debug } from '../../../utils/debug.js';
+
+export class ClaudeCodeMCPClient extends MCPClient {
+  name = 'Claude Code';
+  docsUrl = 'https://docs.anthropic.com/en/docs/claude-code/mcp-servers';
+  usesCLI = true;
+  private claudeBinaryPath: string | null = null;
+
+  async isClientSupported(): Promise<boolean> {
+    try {
+      const binary = this.findClaudeBinary();
+      if (!binary) {
+        debug('Claude Code CLI not found');
+        return false;
+      }
+      execSync(`${binary} --version`, { stdio: 'pipe' });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private findClaudeBinary(): string | null {
+    if (this.claudeBinaryPath) {
+      return this.claudeBinaryPath;
+    }
+    const possiblePaths = [
+      path.join(os.homedir(), '.claude', 'local', 'claude'),
+      path.join(os.homedir(), '.bun', 'bin', 'claude'),
+      path.join(os.homedir(), '.npm', 'bin', 'claude'),
+      path.join(os.homedir(), '.yarn', 'bin', 'claude'),
+      '/usr/local/bin/claude',
+      '/opt/homebrew/bin/claude',
+    ];
+    for (const claudePath of possiblePaths) {
+      if (fs.existsSync(claudePath)) {
+        debug(`Found claude binary at: ${claudePath}`);
+        this.claudeBinaryPath = claudePath;
+        return claudePath;
+      }
+    }
+    try {
+      execSync('command -v claude', { stdio: 'pipe' });
+      this.claudeBinaryPath = 'claude';
+      return 'claude';
+    } catch {
+      return null;
+    }
+  }
+
+  async getConfigPath(): Promise<string> {
+    throw new Error('Claude Code uses CLI for configuration');
+  }
+
+  getServerPropertyName(): string {
+    return 'mcpServers';
+  }
+
+  async isServerInstalled(): Promise<boolean> {
+    try {
+      const binary = this.findClaudeBinary();
+      if (!binary) return false;
+      const output = execSync(`${binary} mcp list`, { stdio: 'pipe' });
+      return output.toString().includes(SERVER_NAME);
+    } catch {
+      return false;
+    }
+  }
+
+  async addServer(
+    apiKey: string,
+    mode: 'local' | 'remote',
+  ): Promise<MCPClientResult> {
+    const binary = this.findClaudeBinary();
+    if (!binary) {
+      return { success: false, error: 'Claude Code CLI not found' };
+    }
+    try {
+      try {
+        execSync(`${binary} mcp remove --scope user ${SERVER_NAME}`, { stdio: 'pipe' });
+      } catch {
+      }
+      let command: string;
+      if (mode === 'local') {
+        command = `${binary} mcp add --transport http ${SERVER_NAME} ${LOCAL_MCP_URL} --header "Authorization: Bearer ${apiKey}" -s user`;
+      } else {
+        command = `${binary} mcp add --transport http ${SERVER_NAME} ${REMOTE_MCP_URL} --header "Authorization: Bearer ${apiKey}" -s user`;
+      }
+      debug(`Running: ${command}`);
+      execSync(command, { stdio: 'pipe' });
+      return { success: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { success: false, error: message };
+    }
+  }
+
+  async removeServer(): Promise<MCPClientResult> {
+    const binary = this.findClaudeBinary();
+    if (!binary) {
+      return { success: false, error: 'Claude Code CLI not found' };
+    }
+    try {
+      const command = `${binary} mcp remove --scope user ${SERVER_NAME}`;
+      debug(`Running: ${command}`);
+      execSync(command, { stdio: 'pipe' });
+      return { success: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { success: false, error: message };
+    }
+  }
+}
